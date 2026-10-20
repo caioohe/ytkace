@@ -1,6 +1,7 @@
 #import "../../YTKACE.h"
 #import "../../Runtime/Hooking.h"
 #import "../../Runtime/Preferences.h"
+#import "../../Runtime/Localization.h"
 #import "../../Settings/YTKACEDownloadsController.h"
 #import "../../UI/Assets.h"
 #import "../Interface/NavigationVisibility.h"
@@ -35,6 +36,7 @@ static BOOL YTKACEStencilRendering;
 static NSString * const YTKACEPivotIdentifier = @"FEYTKACE";
 static NSInteger const YTKACEExtraIconTag = 0x59414349;
 static NSInteger const YTKACEExtraLabelTag = 0x5941434A;
+static NSInteger const YTKACEFallbackLabelTag = 0x5941434B;
 static BOOL YTKACEStartupApplied;
 
 static BOOL YTKACENavigationRefreshScheduled;
@@ -821,7 +823,8 @@ static void YTKACECenterPivotIcon(UIView *view, BOOL centered) {
 
 static UILabel *YTKACEFindNativeLabel(UIView *view) {
     if ([view isKindOfClass:UILabel.class]) {
-        return (view.tag == 0x59414347 || view.tag == YTKACEExtraLabelTag)
+        return (view.tag == 0x59414347 || view.tag == YTKACEExtraLabelTag ||
+                view.tag == YTKACEFallbackLabelTag)
             ? nil : (UILabel *)view;
     }
     for (UIView *subview in view.subviews) {
@@ -1283,6 +1286,97 @@ static void YTKACERestyleSelectedTab(UIView *item) {
     ((void (*)(id, SEL, BOOL))objc_msgSend)(item, setter, YES);
 }
 
+// Fallback for YouTube's icon-only pivot tabs (21.41.5).
+// Keeps the original renderers, labels, and other tweak features intact.
+static NSString *YTKACEFallbackTitle(UIView *item) {
+    NSString *raw = YTKACETabToken(item);
+    NSString *token = YTKACECanonicalTabToken(raw);
+    if ([token isEqualToString:@"feytkace"] || [token containsString:@"ytkace"]) {
+        return nil; // Downloads already installs its own label.
+    }
+    NSDictionary *custom = [NSUserDefaults.standardUserDefaults
+        dictionaryForKey:@"YTKACE.Preference.Tabs.Names"];
+    NSString *name = custom[raw] ?: custom[token];
+    if ([name isKindOfClass:NSString.class] && name.length > 0) return name;
+    static NSDictionary<NSString *, NSString *> *titles;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        titles = @{
+            @"home": @"Home", @"shorts": @"Shorts",
+            @"subscriptions": @"Subscriptions", @"you": @"You",
+            @"music": @"Music", @"live": @"Live",
+            @"gaming": @"Gaming", @"news": @"News",
+            @"sports": @"Sports", @"learning": @"Learning",
+            @"fashion": @"Fashion", @"playlists": @"Playlists",
+            @"history": @"History", @"notifications": @"Notifs",
+            @"watchlater": @"WLater", @"posts": @"Posts",
+            @"create": @"Create"
+        };
+    });
+    NSString *key = titles[token];
+    return key != nil ? YTKACELocalized(key) : nil;
+}
+
+static BOOL YTKACEHasNativeVisibleTabTitle(UIView *root, UIView *node) {
+    if ([node isKindOfClass:UILabel.class] &&
+        node.tag != 0x59414347 && node.tag != YTKACEExtraLabelTag &&
+        node.tag != YTKACEFallbackLabelTag) {
+        UILabel *label = (UILabel *)node;
+        if (label.text.length > 0 && CGRectGetWidth(label.bounds) > 3.0 &&
+            CGRectGetHeight(label.bounds) > 3.0) {
+            CGRect frame = [label convertRect:label.bounds toView:root];
+            if (CGRectGetMidY(frame) >= CGRectGetHeight(root.bounds) * 0.40 &&
+                CGRectIntersectsRect(frame, root.bounds)) {
+                BOOL visible = YES;
+                for (UIView *parent = label; parent != nil; parent = parent.superview) {
+                    if (parent.hidden || parent.alpha < 0.05 ||
+                        parent.layer.opacity < 0.05) {
+                        visible = NO;
+                        break;
+                    }
+                    if (parent == root) break;
+                }
+                if (visible) return YES;
+            }
+        }
+    }
+    for (UIView *child in node.subviews) {
+        if (YTKACEHasNativeVisibleTabTitle(root, child)) return YES;
+    }
+    return NO;
+}
+
+static void YTKACEEnsureFallbackTabTitle(UIView *item) {
+    UILabel *fallback = (UILabel *)[item viewWithTag:YTKACEFallbackLabelTag];
+    BOOL hide = YTKACEFeatureEnabled(@"YTKACE.Preference.Tabs.LabelsHidden");
+    NSString *title = hide ? nil : YTKACEFallbackTitle(item);
+    if (title.length == 0 || YTKACEHasNativeVisibleTabTitle(item, item)) {
+        [fallback removeFromSuperview];
+        return;
+    }
+    if (fallback == nil) {
+        fallback = [[UILabel alloc] initWithFrame:CGRectZero];
+        fallback.tag = YTKACEFallbackLabelTag;
+        fallback.textAlignment = NSTextAlignmentCenter;
+        fallback.userInteractionEnabled = NO;
+        fallback.adjustsFontSizeToFitWidth = YES;
+        fallback.minimumScaleFactor = 0.75;
+        fallback.font = [UIFont systemFontOfSize:10.0 weight:UIFontWeightMedium];
+        [item addSubview:fallback];
+    }
+    if (![fallback.text isEqualToString:title]) fallback.text = title;
+    UIColor *color = YTKACETabForegroundColor(item);
+    if (![fallback.textColor isEqual:color]) fallback.textColor = color;
+    if (fallback.hidden) fallback.hidden = NO;
+    if (fallback.alpha != 1.0) fallback.alpha = 1.0;
+    CGRect frame = CGRectMake(2.0,
+                              MAX(0.0, CGRectGetHeight(item.bounds) - 18.0),
+                              MAX(0.0, CGRectGetWidth(item.bounds) - 4.0),
+                              15.0);
+    if (!CGRectEqualToRect(fallback.frame, frame)) fallback.frame = frame;
+    if (item.subviews.lastObject != fallback) [item bringSubviewToFront:fallback];
+}
+
 static void YTKACEApplyPivotItemPresentation(UIView *view) {
     BOOL hideLabels = YTKACEFeatureEnabled(@"YTKACE.Preference.Tabs.LabelsHidden");
     YTKACESetLabelsHidden(view, hideLabels);
@@ -1290,6 +1384,7 @@ static void YTKACEApplyPivotItemPresentation(UIView *view) {
     YTKACEApplyExtraTabIcon(view);
     YTKACECenterPivotIcon(view, hideLabels);
     YTKACEApplyTabTint(view);
+    YTKACEEnsureFallbackTabTitle(view);
 }
 
 static void YTKACEPivotButtonLayout(UIView *receiver, SEL selector) {
@@ -1517,6 +1612,9 @@ static void YTKACELayoutItemsInGlass(UIView *bar, CGRect glassFrame) {
         if (!CGRectEqualToRect(CGRectIntegral(item.frame), CGRectIntegral(local))) {
             item.frame = local;
         }
+        // Glass tab widths change as items are redistributed; keep the fallback
+        // aligned after the frame is updated, even if native labels are absent.
+        YTKACEEnsureFallbackTabTitle(item);
     }
 }
 
