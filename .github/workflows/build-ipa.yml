@@ -1,6 +1,12 @@
 name: IPA
 
 on:
+  # Build an installable IPA automatically when this workflow is updated.
+  # Ordinary tweak changes still use the Deb checks; manual IPA builds remain available.
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-ipa.yml'
   workflow_dispatch:
     inputs:
       ipa_url:
@@ -29,8 +35,8 @@ jobs:
       - name: Collect IPA bases
         id: targets
         env:
-          IPA_URL: ${{ inputs.ipa_url }}
-          IPA_URL_IOS17: ${{ inputs.ipa_url_ios17 }}
+          IPA_URL: ${{ github.event_name == 'push' && 'https://www.dropbox.com/scl/fi/1m7rq3lpkg3mfsone2299/com.google.ios.youtube-21.33.6-eeveedecrypter.ipa?rlkey=b2nsvre89881puprynwkfau8q&st=4fkh7ry8&dl=1' || inputs.ipa_url }}
+          IPA_URL_IOS17: ${{ github.event_name == 'push' && 'https://www.dropbox.com/scl/fi/a937ul1u0s72xri2e2m3i/com.google.ios.youtube-21.41.5-eeveedecrypter.ipa?rlkey=ycya2apwz7fs1x1w3ua8y0mcu&st=nyvrtfpy&dl=1' || inputs.ipa_url_ios17 }}
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
