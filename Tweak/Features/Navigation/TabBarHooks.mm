@@ -1483,12 +1483,19 @@ static void YTKACEPivotButtonLayout(UIView *receiver, SEL selector) {
     if (OriginalPivotButtonLayout != NULL) {
         ((void (*)(id, SEL))OriginalPivotButtonLayout)(receiver, selector);
     }
-    if (YTKACETintMode != 0) {
-        UIView *tintItem = YTKACEPivotItemAncestor(receiver);
-        if (tintItem != nil) YTKACEApplyTabTint(tintItem);
-    }
-    if (!YTKACEFeatureEnabled(@"YTKACE.Preference.Tabs.LabelsHidden")) return;
     UIView *item = YTKACEPivotItemAncestor(receiver);
+    if (YTKACETintMode != 0 && item != nil) {
+        YTKACEApplyTabTint(item);
+    }
+    if (!YTKACEFeatureEnabled(@"YTKACE.Preference.Tabs.LabelsHidden")) {
+        // YouTube lays out YTQTMButton AFTER its pivot item. That layout can
+        // center native icons again when the mini glass bar is restored.
+        // Re-apply the synthetic icon/caption geometry after this native pass.
+        if (item != nil && !CGRectIsEmpty(item.bounds)) {
+            YTKACEEnsureFallbackTabTitle(item);
+        }
+        return;
+    }
     if (item == nil || CGRectIsEmpty(item.bounds)) return;
     YTKACESetLabelsHidden(receiver, YES);
     UIImageView *icon = nil;
@@ -2051,6 +2058,19 @@ static void YTKACERestoreMiniIcon(UIView *bar) {
     for (UIView *item in YTKACESortedPivotItems(bar)) item.alpha = 1.0;
 }
 
+// The minimized-pill animation lays out native buttons while their parent
+// pivot items are faded to alpha=0. The fallback icon selector intentionally
+// ignores invisible descendants, so those layouts cannot safely reposition
+// the icons. Reflow AFTER the fade and mini mask restoration, once the items
+// are visible again; the button-layout hook covers subsequent UIKit passes.
+static void YTKACEReflowRestoredTabItems(UIView *bar) {
+    if (bar == nil || YTKACEBarMinimized(bar)) return;
+    for (UIView *item in YTKACESortedPivotItems(bar)) {
+        if (item.hidden || item.alpha < 0.05) continue;
+        YTKACEApplyPivotItemPresentation(item);
+    }
+}
+
 static void YTKACESetBarMinimized(UIView *bar, BOOL minimized) {
     if (bar == nil || YTKACEBarMinimized(bar) == minimized) return;
     UIView *selected = YTKACESelectedPivotItem(bar);
@@ -2090,7 +2110,10 @@ static void YTKACESetBarMinimized(UIView *bar, BOOL minimized) {
         [bar layoutIfNeeded];
     }, ^(__unused BOOL finished) {
         UIView *strongBar = weakBar;
-        if (strongBar != nil && !YTKACEBarMinimized(strongBar)) YTKACERestoreMiniIcon(strongBar);
+        if (strongBar != nil && !YTKACEBarMinimized(strongBar)) {
+            YTKACERestoreMiniIcon(strongBar);
+            YTKACEReflowRestoredTabItems(strongBar);
+        }
     });
     YTKACEMiniMaskResponse = 0.0;
     UIImageView *miniIcon = objc_getAssociatedObject(bar, YTKACEPivotBarMiniIconAssociation);
@@ -2099,10 +2122,16 @@ static void YTKACESetBarMinimized(UIView *bar, BOOL minimized) {
         if (!minimized) {
             selected.alpha = 1.0;
             miniIcon.alpha = 0.0;
+            // The first restoration pass must run with alpha back to 1,
+            // not during the hidden-items layout that occurs above.
+            YTKACEReflowRestoredTabItems(bar);
         }
     }, ^(__unused BOOL finished) {
         UIView *strongBar = weakBar;
-        if (strongBar != nil && !YTKACEBarMinimized(strongBar)) YTKACERemoveMiniMask(strongBar);
+        if (strongBar != nil && !YTKACEBarMinimized(strongBar)) {
+            YTKACERemoveMiniMask(strongBar);
+            YTKACEReflowRestoredTabItems(strongBar);
+        }
     });
 }
 
