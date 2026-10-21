@@ -1376,7 +1376,8 @@ static UIView *YTKACEFallbackIconVisual(UIView *item) {
     CGFloat midX = CGRectGetMidX(item.bounds);
     CGFloat midY = CGRectGetMidY(item.bounds);
     for (UIView *candidate in candidates) {
-        if (!YTKACEFallbackIconVisible(candidate, item)) continue;
+        if ([candidate isKindOfClass:UIControl.class] ||
+            !YTKACEFallbackIconVisible(candidate, item)) continue;
         if ([candidate isKindOfClass:UIImageView.class] &&
             ((UIImageView *)candidate).image == nil) continue;
         CGRect rect = [candidate convertRect:candidate.bounds toView:item];
@@ -1393,7 +1394,7 @@ static UIView *YTKACEFallbackIconVisual(UIView *item) {
             best = candidate;
         }
     }
-    if (best == nil) return nil;
+    if (best == nil || [best isKindOfClass:UIControl.class]) return nil;
 
     // Keep related icon subviews (e.g. selected and unselected states)
     // together, but do not reposition a button or other interactive view.
@@ -1429,7 +1430,12 @@ static void YTKACEEnsureFallbackTabTitle(UIView *item) {
     UILabel *fallback = (UILabel *)[item viewWithTag:YTKACEFallbackLabelTag];
     BOOL hide = YTKACEFeatureEnabled(@"YTKACE.Preference.Tabs.LabelsHidden");
     NSString *title = hide ? nil : YTKACEFallbackTitle(item);
-    if (title.length == 0 || YTKACEHasNativeVisibleTabTitle(item, item)) {
+    UILabel *extraLabel = (UILabel *)[item viewWithTag:YTKACEExtraLabelTag];
+    BOOL hasExtraLabel = [extraLabel isKindOfClass:UILabel.class] &&
+        !extraLabel.hidden && extraLabel.alpha > 0.05 &&
+        extraLabel.text.length > 0;
+    if (title.length == 0 || hasExtraLabel ||
+        YTKACEHasNativeVisibleTabTitle(item, item)) {
         [fallback removeFromSuperview];
         return;
     }
