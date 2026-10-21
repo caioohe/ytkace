@@ -1346,6 +1346,85 @@ static BOOL YTKACEHasNativeVisibleTabTitle(UIView *root, UIView *node) {
     return NO;
 }
 
+// The Downloads tab draws its icon and caption independently. The standard
+// YouTube pivot bar uses an icon-only renderer in some releases, so a synthetic
+// caption must be paired with a separately positioned icon visual. Never move
+// the UIControl: its original hit area and selection gesture must stay intact.
+static BOOL YTKACEFallbackIconVisible(UIView *candidate, UIView *item) {
+    for (UIView *view = candidate; view != nil; view = view.superview) {
+        if (view.hidden || view.alpha < 0.05 || view.layer.opacity < 0.05) return NO;
+        if (view == item) return YES;
+    }
+    return NO;
+}
+
+static UIView *YTKACEFallbackIconVisual(UIView *item) {
+    NSString *token = YTKACECanonicalTabToken(YTKACETabToken(item));
+    if ([token isEqualToString:@"you"]) {
+        UIImageView *avatar = YTKACEFindPhotoView(item);
+        if (avatar != nil && YTKACEFallbackIconVisible(avatar, item) &&
+            CGRectGetWidth(avatar.bounds) <= 48.0 &&
+            CGRectGetHeight(avatar.bounds) <= 48.0) {
+            return avatar;
+        }
+    }
+
+    NSMutableArray<UIView *> *candidates = [NSMutableArray array];
+    YTKACECollectIconCandidates(item, item, candidates);
+    UIView *best = nil;
+    CGFloat bestScore = CGFLOAT_MAX;
+    CGFloat midX = CGRectGetMidX(item.bounds);
+    CGFloat midY = CGRectGetMidY(item.bounds);
+    for (UIView *candidate in candidates) {
+        if (!YTKACEFallbackIconVisible(candidate, item)) continue;
+        if ([candidate isKindOfClass:UIImageView.class] &&
+            ((UIImageView *)candidate).image == nil) continue;
+        CGRect rect = [candidate convertRect:candidate.bounds toView:item];
+        CGFloat width = CGRectGetWidth(rect);
+        CGFloat height = CGRectGetHeight(rect);
+        if (width < 12.0 || height < 12.0 ||
+            width > 48.0 || height > 48.0) continue;
+        CGFloat score = fabs(CGRectGetMidX(rect) - midX) * 2.0 +
+            fabs(CGRectGetMidY(rect) - midY) * 0.25 +
+            fabs(MAX(width, height) - 24.0) * 0.5;
+        if ([candidate isKindOfClass:UIImageView.class]) score -= 6.0;
+        if (score < bestScore) {
+            bestScore = score;
+            best = candidate;
+        }
+    }
+    if (best == nil) return nil;
+
+    // Keep related icon subviews (e.g. selected and unselected states)
+    // together, but do not reposition a button or other interactive view.
+    UIView *container = YTKACEIconContainer(best, item);
+    if (container != nil && container != item &&
+        ![container isKindOfClass:UIControl.class] &&
+        CGRectGetWidth(container.bounds) <= 40.0 &&
+        CGRectGetHeight(container.bounds) <= 40.0 &&
+        !YTKACEContainsLabel(container)) {
+        return container;
+    }
+    return best;
+}
+
+static void YTKACEPositionFallbackIcon(UIView *item, CGFloat captionTop) {
+    UIView *visual = YTKACEFallbackIconVisual(item);
+    if (visual == nil || visual.superview == nil) return;
+    CGFloat h = CGRectGetHeight(visual.bounds);
+    if (h < 12.0 || h > 48.0) return;
+    // Match YTKACE's independent icon at the top, caption at the bottom.
+    // Leave a gap when the item is shorter than the normal 56-pt pivot.
+    CGFloat y = MIN(4.0 + h * 0.5, captionTop - 3.0 - h * 0.5);
+    y = MAX(h * 0.5, y);
+    CGPoint target = [item convertPoint:CGPointMake(CGRectGetMidX(item.bounds), y)
+                                toView:visual.superview];
+    if (fabs(visual.center.x - target.x) > 0.5 ||
+        fabs(visual.center.y - target.y) > 0.5) {
+        visual.center = target;
+    }
+}
+
 static void YTKACEEnsureFallbackTabTitle(UIView *item) {
     UILabel *fallback = (UILabel *)[item viewWithTag:YTKACEFallbackLabelTag];
     BOOL hide = YTKACEFeatureEnabled(@"YTKACE.Preference.Tabs.LabelsHidden");
@@ -1365,15 +1444,22 @@ static void YTKACEEnsureFallbackTabTitle(UIView *item) {
         [item addSubview:fallback];
     }
     if (![fallback.text isEqualToString:title]) fallback.text = title;
-    UIColor *color = YTKACETabForegroundColor(item);
+    UILabel *nativeLabel = YTKACEFindNativeLabel(item);
+    UIFont *nativeFont = nativeLabel.font;
+    if (nativeFont != nil && nativeFont.pointSize >= 9.0 &&
+        nativeFont.pointSize <= 15.0 && fallback.font != nativeFont) {
+        fallback.font = nativeFont;
+    }
+    UIColor *color = (YTKACETintMode != 0 && YTKACEPivotItemSelected(item))
+        ? YTKACETintColor : YTKACETabForegroundColor(item);
     if (![fallback.textColor isEqual:color]) fallback.textColor = color;
     if (fallback.hidden) fallback.hidden = NO;
     if (fallback.alpha != 1.0) fallback.alpha = 1.0;
-    CGRect frame = CGRectMake(2.0,
-                              MAX(0.0, CGRectGetHeight(item.bounds) - 18.0),
-                              MAX(0.0, CGRectGetWidth(item.bounds) - 4.0),
-                              15.0);
+    CGFloat captionTop = MAX(0.0, CGRectGetHeight(item.bounds) - 18.0);
+    CGRect frame = CGRectMake(2.0, captionTop,
+                              MAX(0.0, CGRectGetWidth(item.bounds) - 4.0), 15.0);
     if (!CGRectEqualToRect(fallback.frame, frame)) fallback.frame = frame;
+    YTKACEPositionFallbackIcon(item, captionTop);
     if (item.subviews.lastObject != fallback) [item bringSubviewToFront:fallback];
 }
 
